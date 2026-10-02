@@ -1,0 +1,227 @@
+name: libvlcrs
+
+# CI for the Rust playback core in libvlcrs/.
+#
+# Ground rules (see the delivery notes):
+#   * arm64-v8a only — no other ABI is built;
+#   * release profile only — no debug build is produced anywhere;
+#   * versions are never bumped by CI.
+
+on:
+  push:
+    branches:
+      - feature/libvlcrs-lite
+    paths:
+      - 'libvlcrs/**'
+      - '.github/workflows/libvlcrs.yml'
+  pull_request:
+    paths:
+      - 'libvlcrs/**'
+      - '.github/workflows/libvlcrs.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: libvlcrs-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # The engine targets API 26 (AAudio) on arm64-v8a.
+  VLCRS_ANDROID_API: '26'
+  VLCRS_TARGET: aarch64-linux-android
+
+jobs:
+  quality:
+    name: host quality (fmt, clippy, unit tests)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: libvlcrs
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: libvlcrs -> target
+
+      - name: rustfmt
+        run: cargo fmt --all -- --check
+
+      - name: clippy (release, -D warnings)
+        run: cargo clippy --workspace --all-targets --release -- -D warnings
+
+      - name: unit tests (release)
+        run: cargo test --workspace --release -- --nocapture
+
+      - name: summary
+        run: |
+          {
+            echo "### libvlcrs host quality"
+            echo '```'
+            cargo test --workspace --release 2>&1 | grep -E "^test result" || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  build-arm64:
+    name: build arm64-v8a (release)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    needs: quality
+    defaults:
+      run:
+        working-directory: libvlcrs
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: libvlcrs -> target
+
+      - name: locate the NDK
+        id: ndk
+        run: |
+          set -euo pipefail
+          for candidate in \
+            "${ANDROID_NDK_LATEST_HOME:-}" \
+            "${ANDROID_NDK_HOME:-}" \
+            "${ANDROID_NDK:-}" \
+            $(ls -d /usr/local/lib/android/sdk/ndk/* 2>/dev/null | sort -V | tail -1); do
+            if [ -n "${candidate:-}" ] && [ -x "$candidate/toolchains/llvm/prebuilt/linux-x86_64/bin/clang" ]; then
+              echo "ndk=$candidate" >> "$GITHUB_OUTPUT"
+              echo "Using NDK: $candidate"
+              cat "$candidate/source.properties" 2>/dev/null || true
+              exit 0
+            fi
+          done
+          echo "::error::no usable Android NDK found"
+          exit 1
+
+      - name: cross compile libvlcrs.so (release, arm64-v8a)
+        env:
+          NDK: ${{ steps.ndk.outputs.ndk }}
+        run: |
+          set -euo pipefail
+          HOST_TAG=linux-x86_64
+          TOOLCHAIN="$NDK/toolchains/llvm/prebuilt/$HOST_TAG"
+          export PATH="$TOOLCHAIN/bin:$PATH"
+          export CC_aarch64_linux_android="$TOOLCHAIN/bin/aarch64-linux-android${VLCRS_ANDROID_API}-clang"
+          export CXX_aarch64_linux_android="$TOOLCHAIN/bin/aarch64-linux-android${VLCRS_ANDROID_API}-clang++"
+          export AR_aarch64_linux_android="$TOOLCHAIN/bin/llvm-ar"
+          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$CC_aarch64_linux_android"
+          export CARGO_TARGET_AARCH64_LINUX_ANDROID_AR="$AR_aarch64_linux_android"
+          # release only: the pipeline never builds a debug artefact
+          cargo build --release --target "$VLCRS_TARGET" -p vlcrs-lite
+          SO="target/$VLCRS_TARGET/release/libvlcrs.so"
+          test -f "$SO"
+          "$TOOLCHAIN/bin/llvm-strip" --strip-unneeded "$SO"
+          mkdir -p ../dist/jniLibs/arm64-v8a ../dist/include
+          cp "$SO" ../dist/jniLibs/arm64-v8a/libvlcrs.so
+          cp include/vlcrs.h ../dist/include/vlcrs.h
+
+      - name: inspect the artefact
+        env:
+          NDK: ${{ steps.ndk.outputs.ndk }}
+        run: |
+          set -euo pipefail
+          TOOLCHAIN="$NDK/toolchains/llvm/prebuilt/linux-x86_64"
+          SO=../dist/jniLibs/arm64-v8a/libvlcrs.so
+          echo "== file =="
+          file "$SO" || true
+          ls -l "$SO"
+          echo "== ELF header =="
+          "$TOOLCHAIN/bin/llvm-readelf" -h "$SO" | sed -n '1,20p'
+          echo "== needed libraries =="
+          "$TOOLCHAIN/bin/llvm-readelf" -d "$SO" | grep -E "NEEDED|SONAME" || true
+          echo "== exported JNI/C symbols =="
+          "$TOOLCHAIN/bin/llvm-nm" -D --defined-only "$SO" \
+            | grep -E " (T|W) (JNI_OnLoad|Java_org_videolan_libvlcrs|vlcrs_)" \
+            | awk '{print $3}' | sort | tee ../dist/exported-symbols.txt
+          echo "== checks =="
+          grep -q "^JNI_OnLoad$" ../dist/exported-symbols.txt
+          grep -q "^Java_org_videolan_libvlcrs_NativeBridge_nativeCreate$" ../dist/exported-symbols.txt
+          grep -q "^vlcrs_set_projection_mode$" ../dist/exported-symbols.txt
+          echo "symbol checks OK ($(wc -l < ../dist/exported-symbols.txt) exports)"
+
+      - name: package
+        run: |
+          set -euo pipefail
+          cd ../dist
+          SHA=$(sha256sum jniLibs/arm64-v8a/libvlcrs.so | awk '{print $1}')
+          printf '%s  jniLibs/arm64-v8a/libvlcrs.so\n' "$SHA" > SHA256SUMS.txt
+          sha256sum include/vlcrs.h >> SHA256SUMS.txt
+          {
+            echo "libvlcrs build"
+            echo "==============="
+            echo "target:    aarch64-linux-android (arm64-v8a)"
+            echo "profile:   release"
+            echo "min API:   $VLCRS_ANDROID_API"
+            echo "rust:      $(rustc --version)"
+            echo "commit:    $GITHUB_SHA"
+            echo "sha256:    $SHA"
+            echo
+            echo "exported symbols: $(wc -l < exported-symbols.txt)"
+          } > BUILD-INFO.txt
+          zip -qr libvlcrs-android-arm64-v8a.zip jniLibs include BUILD-INFO.txt SHA256SUMS.txt
+          cp jniLibs/arm64-v8a/libvlcrs.so libvlcrs.so
+          ls -l
+
+      - name: upload build artefacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: libvlcrs-android-arm64-v8a
+          path: |
+            dist/libvlcrs-android-arm64-v8a.zip
+            dist/libvlcrs.so
+            dist/include/vlcrs.h
+            dist/SHA256SUMS.txt
+            dist/BUILD-INFO.txt
+            dist/exported-symbols.txt
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: publish release
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          cd ../dist
+          TAG="libvlcrs-v1.0.0-arm64"
+          NOTES_FILE=$(mktemp)
+          {
+            echo "libvlcrs — lightweight Rust playback core for Android (arm64-v8a)."
+            echo
+            echo "* **Build**: \`release\` profile, \`aarch64-linux-android\`, min API $VLCRS_ANDROID_API."
+            echo "* **Contents**: \`jniLibs/arm64-v8a/libvlcrs.so\` + \`include/vlcrs.h\` (C ABI)."
+            echo "* **VR matrix**: 360°/180° × mono/SBS/TB, plus Auto (metadata) and forced planar; left/right eye selectable; switching happens in place and preserves the playback position."
+            echo "* Built from commit \`$GITHUB_SHA\`."
+            echo
+            echo "Install with the demo player APK from the \`vlc-android\` repository release."
+          } > "$NOTES_FILE"
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes-file "$NOTES_FILE"
+          else
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" \
+              --title "libvlcrs 1.0.0 (arm64-v8a)" --notes-file "$NOTES_FILE"
+          fi
+          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber \
+            libvlcrs-android-arm64-v8a.zip \
+            libvlcrs.so \
+            include/vlcrs.h \
+            SHA256SUMS.txt \
+            BUILD-INFO.txt
+          echo "released $TAG"
+          echo "### Release" >> "$GITHUB_STEP_SUMMARY"
+          echo "[$TAG](https://github.com/$GITHUB_REPOSITORY/releases/tag/$TAG) updated with the arm64-v8a build of \`$GITHUB_SHA\`." >> "$GITHUB_STEP_SUMMARY"

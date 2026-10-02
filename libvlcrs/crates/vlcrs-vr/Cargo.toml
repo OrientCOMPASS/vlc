@@ -1,0 +1,14 @@
+[package]
+name = "vlcrs-vr"
+description = "Spherical (VR) video projection model for libvlcrs: format matrix, meshes, view control, head tracking and HUD read-outs"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+
+[lib]
+name = "vlcrs_vr"
+path = "src/lib.rs"

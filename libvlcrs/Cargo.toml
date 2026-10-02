@@ -1,0 +1,38 @@
+# libvlcrs -- a lightweight, Rust re-implementation of the libvlc playback core
+# targeted at Android/arm64-v8a, with first class spherical (VR) video support.
+#
+# This is a *self contained* cargo workspace on purpose: it is deliberately not a
+# member of the top level VLC workspace (which pins a nightly toolchain and is
+# wired into the autotools/meson build). libvlcrs builds with stable Rust only
+# and has no dependency on the C tree, so it can be cross compiled for Android
+# without bootstrapping contribs.
+
+[workspace]
+resolver = "2"
+members = [
+    "crates/vlcrs-vr",
+    "crates/vlcrs-media",
+    "crates/vlcrs-lite",
+]
+
+[workspace.package]
+version = "1.0.0"
+edition = "2021"
+rust-version = "1.75"
+license = "LGPL-2.1-or-later"
+repository = "https://github.com/OrientCOMPASS/vlc"
+
+[workspace.dependencies]
+vlcrs-vr = { path = "crates/vlcrs-vr" }
+vlcrs-media = { path = "crates/vlcrs-media" }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "unwind"
+strip = "symbols"
+debug = false
+
+[profile.test]
+opt-level = 1

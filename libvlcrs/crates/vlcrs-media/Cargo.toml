@@ -1,0 +1,15 @@
+[package]
+name = "vlcrs-media"
+description = "Lightweight container probing for libvlcrs (ISO-BMFF / Matroska) including spherical metadata"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+vlcrs-vr.workspace = true
+
+[lib]
+name = "vlcrs_media"
+path = "src/lib.rs"

@@ -1,0 +1,28 @@
+[package]
+name = "vlcrs-lite"
+description = "libvlcrs: a lightweight Rust playback core for Android (arm64-v8a) with spherical/VR video support"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "vlcrs"
+path = "src/lib.rs"
+# cdylib → libvlcrs.so for Android, rlib so the host unit tests can link it.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+vlcrs-vr.workspace = true
+vlcrs-media.workspace = true
+
+[target.'cfg(target_os = "android")'.dependencies]
+# `invocation` (the default) is only needed to *launch* a JVM from a desktop
+# binary; on Android the VM is handed to us by JNI_OnLoad.
+jni = { version = "0.21", default-features = false }
+
+[features]
+default = []
+# Build the engine without the Android platform layer (host unit tests).
+host-test = []

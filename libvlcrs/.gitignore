@@ -1,0 +1,5 @@
+/target
+**/*.rs.bk
+# re-include the lock file: the top level VLC .gitignore ignores Cargo.lock, but
+# libvlcrs ships a cdylib and must build reproducibly.
+!Cargo.lock
