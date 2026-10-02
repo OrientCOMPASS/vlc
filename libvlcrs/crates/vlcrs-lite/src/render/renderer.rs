@@ -18,9 +18,9 @@ use std::time::{Duration, Instant};
 use vlcrs_vr::hud::{HudSnapshot, HUD_FLOAT_COUNT};
 use vlcrs_vr::mesh::{mesh_for, Mesh};
 use vlcrs_vr::projection::{Coverage, Geometry, MediaHints, ResolvedProjection, StereoLayout};
-use vlcrs_vr::shaders::{attrib, uniform, FS_OES, FS_SOLID, VS_FLAT, VS_RECT, VS_SPHERE};
+use vlcrs_vr::shaders::{attrib, uniform, FS_OES, VS_RECT, VS_SPHERE};
 use vlcrs_vr::view::Viewport;
-use vlcrs_vr::{ProjectionSource, UvRect, ViewState};
+use vlcrs_vr::{ProjectionSource, UvRect};
 
 use crate::engine::format::TrackFormat;
 use crate::engine::queue::Packet;
@@ -111,7 +111,6 @@ struct Program {
     u_tex: GLint,
     u_scale: GLint,
     u_rotation: GLint,
-    u_color: GLint,
 }
 
 impl Program {
@@ -197,7 +196,6 @@ fn link(vs_src: &str, fs_src: &str) -> Result<Program, String> {
             u_tex: loc(uniform::TEXTURE),
             u_scale: loc(uniform::SCALE),
             u_rotation: loc(uniform::ROTATION),
-            u_color: loc(uniform::COLOR),
         })
     }
 }
@@ -246,7 +244,6 @@ pub(crate) struct Renderer {
     egl: Option<Egl>,
     sphere_prog: Option<Program>,
     rect_prog: Option<Program>,
-    solid_prog: Option<Program>,
     oes_tex: GLuint,
     tex_ready: bool,
     /// Slot 0: flat quad, slot 1: spherical (360 or 180).
@@ -268,7 +265,6 @@ impl Renderer {
             egl: None,
             sphere_prog: None,
             rect_prog: None,
-            solid_prog: None,
             oes_tex: 0,
             tex_ready: false,
             meshes: [(None, Coverage::Planar), (None, Coverage::Full360)],
@@ -311,14 +307,57 @@ impl Renderer {
         for (slot, vs, fs) in [
             (&mut self.sphere_prog, VS_SPHERE, FS_OES),
             (&mut self.rect_prog, VS_RECT, FS_OES),
-            (&mut self.solid_prog, VS_FLAT, FS_SOLID),
         ] {
             match link(vs, fs) {
                 Ok(p) => *slot = Some(p),
                 Err(e) => crate::verror!("{e}"),
             }
         }
-        self.sphere_prog.is_some() && self.rect_prog.is_some()
+        let ok = self.sphere_prog.is_some() && self.rect_prog.is_some();
+        if ok {
+            unsafe {
+                let version = gl_string(GL_VERSION);
+                let renderer = gl_string(GL_RENDERER);
+                let vendor = gl_string(GL_VENDOR);
+                let exts = gl_string(GL_EXTENSIONS);
+                crate::vlog!("GL {version} | {vendor} | {renderer}");
+                if !exts.contains("GL_OES_EGL_image_external") {
+                    crate::vwarn!(
+                        "GL_OES_EGL_image_external not advertised; external texture sampling may fail"
+                    );
+                }
+                let err = glGetError();
+                if err != GL_NO_ERROR {
+                    crate::vwarn!("GL error after init: {}", err_hex(err as i32));
+                }
+            }
+            if let Some(p) = &self.sphere_prog {
+                crate::vlog!(
+                    "sphere program: a_pos={} a_uv={} model={} view={} proj={} uv_rect={} st={} tex={}",
+                    p.a_pos,
+                    p.a_uv,
+                    p.u_model,
+                    p.u_view,
+                    p.u_proj,
+                    p.u_uv_rect,
+                    p.u_st,
+                    p.u_tex
+                );
+            }
+            if let Some(p) = &self.rect_prog {
+                crate::vlog!(
+                    "rect program: a_pos={} a_uv={} uv_rect={} st={} tex={} scale={} rotation={}",
+                    p.a_pos,
+                    p.a_uv,
+                    p.u_uv_rect,
+                    p.u_st,
+                    p.u_tex,
+                    p.u_scale,
+                    p.u_rotation
+                );
+            }
+        }
+        ok
     }
 
     fn ensure_oes_texture(&mut self) -> bool {
@@ -429,7 +468,9 @@ impl Renderer {
             crate::verror!("could not rebuild the video format");
             return false;
         };
-        let st = codec.configure(&fmt, window.as_ptr(), 0);
+        // SAFETY: `window` is a live ANativeWindow reference owned by the
+        // renderer for as long as the codec exists.
+        let st = unsafe { codec.configure(&fmt, window.as_ptr(), 0) };
         if st != AMEDIA_OK {
             crate::verror!(
                 "AMediaCodec_configure failed: {st} ({})",
@@ -670,6 +711,19 @@ impl Renderer {
             if inner.bridge.get_transform_matrix(&mut m) {
                 self.st_matrix = m;
             }
+            if !self.had_frame {
+                crate::vlog!(
+                    "first frame presented: pts={pts}us st=[{:.3} {:.3} {:.3} {:.3} / {:.3} {:.3} {:.3} {:.3}]",
+                    self.st_matrix[0],
+                    self.st_matrix[1],
+                    self.st_matrix[4],
+                    self.st_matrix[5],
+                    self.st_matrix[12],
+                    self.st_matrix[13],
+                    self.st_matrix[10],
+                    self.st_matrix[15]
+                );
+            }
             self.had_frame = true;
             self.frames_since_fps += 1;
             if !audio_master {
@@ -725,11 +779,7 @@ impl Renderer {
     fn resolve_projection(&self, inner: &Arc<Inner>) -> ResolvedProjection {
         let mode = inner.projection_mode();
         let eye = inner.current_eye();
-        let hints = inner
-            .hints
-            .lock()
-            .map(|g| g.clone())
-            .unwrap_or_else(|_| MediaHints::default());
+        let hints = inner.hints.lock().map(|g| *g).unwrap_or_default();
         let mut r = ResolvedProjection::resolve(mode, &hints, eye);
         // the user may invert the packing order advertised by the container
         let user_swap = inner.swap_eyes.load(Ordering::Relaxed);
@@ -780,11 +830,7 @@ impl Renderer {
         } else {
             None
         };
-        let view_state = inner
-            .view
-            .lock()
-            .map(|g| g.clone())
-            .unwrap_or_else(|_| ViewState::new());
+        let view_state = inner.view.lock().map(|g| *g).unwrap_or_default();
         let vu = view_state.evaluate(resolved.coverage, viewport, head);
 
         unsafe {
@@ -793,14 +839,7 @@ impl Renderer {
         }
 
         if !self.had_frame {
-            if let Some(p) = &self.solid_prog {
-                unsafe {
-                    glUseProgram(p.id);
-                    if p.u_color >= 0 {
-                        glUniform4f(p.u_color, 0.0, 0.0, 0.0, 1.0);
-                    }
-                }
-            }
+            // nothing decoded yet: glClear already painted the frame black
             self.swap();
             return;
         }
@@ -828,11 +867,7 @@ impl Renderer {
             return;
         };
 
-        let hints = inner
-            .hints
-            .lock()
-            .map(|g| g.clone())
-            .unwrap_or_else(|_| MediaHints::default());
+        let hints = inner.hints.lock().map(|g| *g).unwrap_or_default();
         let (sx, sy) = aspect_fit(resolved, viewport, self.video.output_size, hints);
         let rotation = quarter_turns(hints.rotation.max(self.video.output_rotation));
         let uv = resolved.uv;
@@ -894,11 +929,7 @@ impl Renderer {
         let resolved = self
             .resolution
             .unwrap_or_else(|| self.resolve_projection(inner));
-        let view_state = inner
-            .view
-            .lock()
-            .map(|g| g.clone())
-            .unwrap_or_else(|_| ViewState::new());
+        let view_state = inner.view.lock().map(|g| *g).unwrap_or_default();
         let vu = view_state.evaluate(resolved.coverage, viewport, None);
         let gyro_ready = inner
             .tracker
@@ -918,7 +949,7 @@ impl Renderer {
             self.last_fps_sample = Instant::now();
         }
 
-        let info = inner.info.lock().map(|g| g.clone()).unwrap_or_default();
+        let info = inner.info.lock().map(|g| *g).unwrap_or_default();
         let snap = HudSnapshot {
             yaw: vu.yaw,
             pitch: vu.pitch,
@@ -991,9 +1022,6 @@ impl Drop for Renderer {
             p.delete();
         }
         if let Some(p) = self.rect_prog.take() {
-            p.delete();
-        }
-        if let Some(p) = self.solid_prog.take() {
             p.delete();
         }
         if self.tex_ready {
@@ -1070,7 +1098,8 @@ fn software_decoder(mime: &str) -> Option<String> {
 /// The render thread entry point.
 pub(crate) fn render_thread(inner: Arc<Inner>) {
     set_thread_name("vlcrs-render");
-    let _ = inner.bridge.attach_permanently();
+    // keep the JVM attachment for the whole life of this thread
+    let _jni = inner.bridge.attach();
     let mesh_step = inner
         .options
         .lock()

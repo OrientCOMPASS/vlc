@@ -319,7 +319,11 @@ impl Codec {
     }
 
     /// Configure the codec; `surface` may be null for byte buffer output.
-    pub fn configure(
+    ///
+    /// # Safety
+    /// `surface` must be either null or a live `ANativeWindow` reference that
+    /// outlives the codec.
+    pub unsafe fn configure(
         &mut self,
         format: &Format,
         surface: *mut ANativeWindow,
@@ -377,7 +381,7 @@ impl Codec {
         if p.is_null() || size == 0 {
             None
         } else {
-            Some((p as *const u8, size))
+            Some((p, size))
         }
     }
 

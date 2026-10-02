@@ -94,7 +94,8 @@ fn run_audio(inner: &Arc<Inner>, tf: &TrackFormat) -> Result<AudioEnd, String> {
     }
     let mut codec = codec.ok_or_else(|| format!("no audio decoder for {}", tf.mime))?;
     let fmt = tf.build().ok_or("cannot rebuild the audio format")?;
-    let st = codec.configure(&fmt, ptr::null_mut(), 0);
+    // SAFETY: a null surface means byte buffer output (audio).
+    let st = unsafe { codec.configure(&fmt, ptr::null_mut(), 0) };
     if st != AMEDIA_OK {
         return Err(format!(
             "audio configure failed: {st} ({})",

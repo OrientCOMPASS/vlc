@@ -1,9 +1,19 @@
 //! JNI entry points.
 //!
+//! # Safety contract (applies to every entry point in this module)
+//!
+//! These functions are called by the JVM.  The `JNIEnv` and the object handles
+//! are provided by ART and are valid for the duration of the call; the `handle`
+//! argument is an opaque `i64` that is validated against the player registry, so
+//! a stale or forged handle yields `Status::BadHandle` instead of undefined
+//! behaviour.  Bodies are wrapped in [`guard`], so a Rust panic is converted into
+//! the documented fallback value rather than unwinding across the JNI boundary.
+//!
 //! The Kotlin side declares these as `external` members of
 //! `org.videolan.libvlcrs.NativeBridge`; every call takes the opaque player
 //! handle as its first argument.  All entry points are panic-guarded: a Rust
 //! panic must never unwind across the JNI boundary.
+#![allow(clippy::missing_safety_doc)] // the contract is documented module-wide
 
 use std::os::raw::c_void;
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -529,10 +539,7 @@ pub unsafe extern "system" fn Java_org_videolan_libvlcrs_NativeBridge_nativeGetH
     handle: jlong,
 ) -> JString<'local> {
     let text = with_player(handle, String::new(), |p| p.hud().lines().join("\n"));
-    match env.new_string(text) {
-        Ok(s) => s,
-        Err(_) => JString::default(),
-    }
+    env.new_string(text).unwrap_or_default()
 }
 
 /// `nativeDescribeProjection(handle): String`
@@ -547,10 +554,7 @@ pub unsafe extern "system" fn Java_org_videolan_libvlcrs_NativeBridge_nativeDesc
     let text = with_player(handle, String::new(), |p| {
         p.resolved_projection().describe()
     });
-    match env.new_string(text) {
-        Ok(s) => s,
-        Err(_) => JString::default(),
-    }
+    env.new_string(text).unwrap_or_default()
 }
 
 /// `nativeVersion(): String`
@@ -559,10 +563,7 @@ pub unsafe extern "system" fn Java_org_videolan_libvlcrs_NativeBridge_nativeVers
     env: JNIEnv<'local>,
     _this: JObject,
 ) -> JString<'local> {
-    match env.new_string(crate::VERSION) {
-        Ok(s) => s,
-        Err(_) => JString::default(),
-    }
+    env.new_string(crate::VERSION).unwrap_or_default()
 }
 
 /// Convert the media snapshot into the JNI int array layout.

@@ -472,12 +472,7 @@ impl Player {
 
     /// The projection that the renderer currently resolves to.
     pub fn resolved_projection(&self) -> ResolvedProjection {
-        let hints = self
-            .inner
-            .hints
-            .lock()
-            .map(|g| g.clone())
-            .unwrap_or_else(|_| MediaHints::default());
+        let hints = self.inner.hints.lock().map(|g| *g).unwrap_or_default();
         let mut r = ResolvedProjection::resolve(
             self.inner.projection_mode(),
             &hints,

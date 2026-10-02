@@ -55,13 +55,13 @@ pub const EGL_TRUE: EGLBoolean = 1;
 /// `EGL_SUCCESS`
 pub const EGL_SUCCESS: EGLint = 0x3000;
 /// `EGL_DEFAULT_DISPLAY`
-pub const EGL_DEFAULT_DISPLAY: *mut c_void = 0 as *mut c_void;
+pub const EGL_DEFAULT_DISPLAY: *mut c_void = std::ptr::null_mut();
 /// `EGL_NO_DISPLAY`
-pub const EGL_NO_DISPLAY: EGLDisplay = 0 as *mut c_void;
+pub const EGL_NO_DISPLAY: EGLDisplay = std::ptr::null_mut();
 /// `EGL_NO_SURFACE`
-pub const EGL_NO_SURFACE: EGLSurface = 0 as *mut c_void;
+pub const EGL_NO_SURFACE: EGLSurface = std::ptr::null_mut();
 /// `EGL_NO_CONTEXT`
-pub const EGL_NO_CONTEXT: EGLContext = 0 as *mut c_void;
+pub const EGL_NO_CONTEXT: EGLContext = std::ptr::null_mut();
 
 /// Config attribute: surface types.
 pub const EGL_SURFACE_TYPE: EGLint = 0x3033;
@@ -219,6 +219,14 @@ pub const GL_BLEND: GLenum = 0x0BE2;
 pub const GL_BACK: GLenum = 0x0405;
 /// `GL_CCW`
 pub const GL_CCW: GLenum = 0x0901;
+/// `GL_VENDOR`
+pub const GL_VENDOR: GLenum = 0x1F00;
+/// `GL_RENDERER`
+pub const GL_RENDERER: GLenum = 0x1F01;
+/// `GL_VERSION`
+pub const GL_VERSION: GLenum = 0x1F02;
+/// `GL_EXTENSIONS`
+pub const GL_EXTENSIONS: GLenum = 0x1F03;
 
 #[link(name = "GLESv2")]
 extern "C" {
@@ -228,6 +236,7 @@ extern "C" {
     pub fn glEnable(cap: GLenum);
     pub fn glDisable(cap: GLenum);
     pub fn glGetError() -> GLenum;
+    pub fn glGetString(name: GLenum) -> *const u8;
     pub fn glFlush();
     pub fn glFinish();
 
@@ -320,4 +329,20 @@ extern "C" {
 /// Hex formatting helper for EGL/GL error codes.
 pub fn err_hex(code: i32) -> String {
     format!("0x{code:04x}")
+}
+
+/// Read a `glGetString` value as a Rust string (empty when unavailable).
+///
+/// # Safety
+/// Must be called with a current GL context on the calling thread.
+pub unsafe fn gl_string(name: GLenum) -> String {
+    let p = unsafe { glGetString(name) };
+    if p.is_null() {
+        return String::new();
+    }
+    let mut len = 0usize;
+    while unsafe { *p.add(len) } != 0 && len < 65536 {
+        len += 1;
+    }
+    String::from_utf8_lossy(unsafe { std::slice::from_raw_parts(p, len) }).into_owned()
 }

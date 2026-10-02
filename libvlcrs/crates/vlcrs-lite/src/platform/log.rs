@@ -21,11 +21,13 @@ pub const TAG: &str = "libvlcrs";
 
 #[cfg(target_os = "android")]
 extern "C" {
-    fn __android_log_write(prio: i32, tag: *const u8, text: *const u8) -> i32;
+    fn __android_log_write(prio: i32, tag: *const c_char, text: *const c_char) -> i32;
 }
 
 #[cfg(target_os = "android")]
 use std::ffi::CString;
+#[cfg(target_os = "android")]
+use std::os::raw::c_char;
 
 /// Write one log line.
 pub fn log(prio: i32, msg: &str) {
@@ -34,7 +36,7 @@ pub fn log(prio: i32, msg: &str) {
         let tag = CString::new(TAG).unwrap_or_default();
         let text = CString::new(msg.replace('\n', " ")).unwrap_or_default();
         unsafe {
-            __android_log_write(prio, tag.as_ptr() as *const u8, text.as_ptr() as *const u8);
+            __android_log_write(prio, tag.as_ptr(), text.as_ptr());
         }
     }
     #[cfg(not(target_os = "android"))]

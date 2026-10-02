@@ -85,6 +85,20 @@ impl JavaBridge {
         &self.vm
     }
 
+    /// Attach the calling thread and hold the attachment for the guard's
+    /// lifetime.  Engine threads keep one guard alive for their whole life so
+    /// that the JVM detaches them cleanly on exit (a native thread that exits
+    /// while attached is undefined behaviour on some runtimes).
+    pub fn attach(&self) -> Option<jni::AttachGuard<'_>> {
+        match self.vm.attach_current_thread() {
+            Ok(guard) => Some(guard),
+            Err(e) => {
+                crate::verror!("attach_current_thread failed: {e}");
+                None
+            }
+        }
+    }
+
     /// Attach the current thread permanently (cheap if already attached).
     pub fn attach_permanently(&self) -> Option<JNIEnv<'_>> {
         match self.vm.attach_current_thread_permanently() {
@@ -236,7 +250,7 @@ impl AppSurface {
     }
 
     /// The underlying global reference.
-    pub fn as_ref(&self) -> &GlobalRef {
+    pub fn get(&self) -> &GlobalRef {
         &self.global
     }
 }

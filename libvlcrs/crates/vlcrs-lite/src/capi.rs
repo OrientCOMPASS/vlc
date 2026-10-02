@@ -1,11 +1,20 @@
 //! C ABI (`include/vlcrs.h`).
 //!
+//! # Safety contract (applies to every entry point in this module)
+//!
+//! Pointers handed in by the caller must be either null (checked) or valid for
+//! the documented length; `handle` values are validated against the player
+//! registry, so unknown handles return [`Status::BadHandle`] instead of
+//! dereferencing anything.  Bodies run inside [`c_guard`], which converts a Rust
+//! panic into the documented fallback value.
+//!
 //! The engine is normally driven through JNI (see [`crate::jni_api`]), because
 //! attaching the output surface and delivering events both need Java objects.
 //! This module exposes the *control* surface for integrators that embed
 //! `libvlcrs.so` from C/C++ or through another FFI layer (for example a Flutter
 //! plugin that reuses a player instance created on the Kotlin side): every call
 //! takes the opaque handle returned by `NativeBridge.nativeCreate`.
+#![allow(clippy::missing_safety_doc)] // the contract is documented module-wide
 
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int};
@@ -296,7 +305,7 @@ pub unsafe extern "C" fn vlcrs_hud_text(handle: i64, buf: *mut c_char, len: c_in
     }
     let n = ((len as usize) - 1).min(bytes.len());
     unsafe {
-        std::ptr::copy_nonoverlapping(bytes.as_ptr(), buf as *mut u8, n);
+        std::ptr::copy_nonoverlapping(bytes.as_ptr(), buf.cast::<u8>(), n);
         *buf.add(n) = 0;
     }
     n as c_int

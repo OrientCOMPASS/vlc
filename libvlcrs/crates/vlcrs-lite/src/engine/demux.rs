@@ -157,10 +157,7 @@ fn run_session(inner: &Arc<Inner>) -> Result<SessionEnd, String> {
         .unwrap_or(0);
     inner.duration_us.store(duration_us, Ordering::Release);
 
-    let mut hints = probed
-        .as_ref()
-        .map(|p| p.hints())
-        .unwrap_or_else(vlcrs_vr::MediaHints::default);
+    let mut hints = probed.as_ref().map(|p| p.hints()).unwrap_or_default();
     let spherical = probed
         .as_ref()
         .and_then(|p| p.video().and_then(|t| t.spherical));

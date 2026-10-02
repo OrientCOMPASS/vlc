@@ -108,6 +108,13 @@ jobs:
           echo "::error::no usable Android NDK found"
           exit 1
 
+      - name: clippy for arm64-v8a (-D warnings)
+        run: |
+          set -euo pipefail
+          # the Android-only modules (NDK FFI, engine, renderer, JNI) are not
+          # compiled for the host, so lint them on the real target
+          cargo clippy --release --target "$VLCRS_TARGET" -p vlcrs-lite --all-targets -- -D warnings
+
       - name: cross compile libvlcrs.so (release, arm64-v8a)
         env:
           NDK: ${{ steps.ndk.outputs.ndk }}
